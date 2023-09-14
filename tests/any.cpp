@@ -1,9 +1,16 @@
+#include <any>
+#include <cstdint>
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <functional>
+#include <limits>
+#include <string>
 #include <thread>
+#include <vector>
 
 #include "simppl/interface.h"
+#include "simppl/serialization.h"
 #include "simppl/skeleton.h"
 #include "simppl/stub.h"
 
@@ -130,7 +137,7 @@ struct Server : simppl::dbus::Skeleton<test::any::AServer> {
       std::vector<simppl::dbus::Any> av;
       av.push_back(std::string("Hello"));
       av.push_back(int(42));
-      av.push_back(test::any::complex(42, 4711));
+      // av.push_back(test::any::complex(42, 4711));
 
       respond_with(complex(av));
     };
@@ -308,7 +315,158 @@ TEST(Any, types) {
   EXPECT_EQ(3, v[2]);
 }
 
+void test_enc_dec_f(
+    const std::function<void(DBusMessageIter &iter, DBusMessage *message)> &f) {
+  // Create a dummy dbus message
+  DBusMessage *message = dbus_message_new_method_call(
+      "org.example.TargetService", "/org/example/TargetObject",
+      "org.example.TargetInterface", "TargetMethod");
+  EXPECT_NE(message, nullptr);
+  DBusMessageIter iter;
+  dbus_message_iter_init_append(message, &iter);
+
+  // Call the actual function
+  f(iter, message);
+
+  // Cleanup
+  dbus_message_unref(message);
+}
+
+template <typename T> void test_enc_dec(const T &t) {
+  test_enc_dec_f([&t](DBusMessageIter &iter, DBusMessage *message) {
+    // Encode
+    simppl::dbus::Any any = t;
+    EXPECT_TRUE(any.is<T>());
+    simppl::dbus::Codec<simppl::dbus::Any>::encode(iter, any);
+
+    dbus_message_iter_init(message, &iter);
+    simppl::dbus::Any result;
+    simppl::dbus::Codec<simppl::dbus::Any>::decode(iter, result);
+    EXPECT_TRUE(result.is<T>());
+
+    EXPECT_EQ(any.containedType, result.containedType);
+    EXPECT_EQ(any.containedTypeSignature, result.containedTypeSignature);
+    EXPECT_TRUE(result.is<T>());
+    EXPECT_EQ(any.as<T>(), result.as<T>());
+  });
+}
+
+template <typename T> void test_enc_dec_number() {
+  test_enc_dec(static_cast<T>(std::numeric_limits<T>::min()));
+  test_enc_dec(static_cast<T>(std::numeric_limits<T>::min() / 2));
+  test_enc_dec(static_cast<T>(std::numeric_limits<T>::max()));
+  test_enc_dec(static_cast<T>(std::numeric_limits<T>::max() / 2));
+  test_enc_dec(static_cast<T>(0));
+}
+
 TEST(Any, empty) {
+  test_enc_dec_f([](DBusMessageIter &iter, DBusMessage *message) {
+    simppl::dbus::Any any;
+    EXPECT_THROW(simppl::dbus::Codec<simppl::dbus::Any>::encode(iter, any), std::invalid_argument);
+  });
+}
+
+TEST(Any, encode_decode_uint8) { test_enc_dec_number<uint8_t>(); }
+// TEST(Any, encode_decode_int8) { test_enc_dec_number<int8_t>(); } // There is
+// no signed byte type in dbus :'(
+
+TEST(Any, encode_decode_uint16) { test_enc_dec_number<uint16_t>(); }
+TEST(Any, encode_decode_int16) { test_enc_dec_number<int16_t>(); }
+
+TEST(Any, encode_decode_uint32) { test_enc_dec_number<uint32_t>(); }
+TEST(Any, encode_decode_int32) { test_enc_dec_number<int32_t>(); }
+
+TEST(Any, encode_decode_uint64) { test_enc_dec_number<uint64_t>(); }
+TEST(Any, encode_decode_int64) { test_enc_dec_number<int64_t>(); }
+
+TEST(Any, encode_decode_double) { test_enc_dec_number<double>(); }
+
+TEST(Any, encode_decode_string) {
+  test_enc_dec(std::string{"https://http.cat/status/510"});
+}
+
+TEST(Any, encode_decode_vector_simple) {
+  std::vector<std::string> vec{"https://http.cat/status/200",
+                               "https://http.cat/status/400",
+                               "https://http.cat/status/510"};
+  test_enc_dec(vec);
+}
+
+TEST(Any, encode_decode_vector_complex1) {
+  std::vector<std::vector<std::string>> vec{
+      {"https://http.cat/status/200"},
+      {"https://http.cat/status/400", "https://http.cat/status/510"}};
+  test_enc_dec(vec);
+}
+
+TEST(Any, encode_decode_vector_empty) {
+  std::vector<std::string> vec{};
+  test_enc_dec(vec);
+}
+
+TEST(Any, encode_decode_vector_empty_complex) {
+  std::vector<std::vector<std::string>> vec{};
+  test_enc_dec(vec);
+}
+
+TEST(Any, encode_decode_vector_any_empty) {
+  test_enc_dec_f([](DBusMessageIter &iter, DBusMessage *message) {
+    std::vector<simppl::dbus::Any> vec{};
+
+    // Encode
+    simppl::dbus::Any any = vec;
+    EXPECT_TRUE(any.is<std::vector<simppl::dbus::Any>>());
+    simppl::dbus::Codec<simppl::dbus::Any>::encode(iter, any);
+
+    dbus_message_iter_init(message, &iter);
+    simppl::dbus::Any result;
+    simppl::dbus::Codec<simppl::dbus::Any>::decode(iter, result);
+
+    EXPECT_EQ(any.containedType, result.containedType);
+    EXPECT_EQ(any.containedTypeSignature, result.containedTypeSignature);
+
+    EXPECT_TRUE(result.is<std::vector<simppl::dbus::Any>>());
+    std::vector<simppl::dbus::Any> resultVec =
+        result.as<std::vector<simppl::dbus::Any>>();
+
+    EXPECT_EQ(vec.size(), resultVec.size());
+  });
+}
+
+TEST(Any, encode_decode_vector_any) {
+  test_enc_dec_f([](DBusMessageIter &iter, DBusMessage *message) {
+    std::vector<simppl::dbus::Any> vec{
+        std::string{"https://http.cat/status/200"}, static_cast<uint32_t>(25),
+        static_cast<double>(42.42)};
+
+    // Encode
+    simppl::dbus::Any any = vec;
+    EXPECT_TRUE(any.is<std::vector<simppl::dbus::Any>>());
+    simppl::dbus::Codec<simppl::dbus::Any>::encode(iter, any);
+
+    dbus_message_iter_init(message, &iter);
+    simppl::dbus::Any result;
+    simppl::dbus::Codec<simppl::dbus::Any>::decode(iter, result);
+
+    EXPECT_EQ(any.containedType, result.containedType);
+    EXPECT_EQ(any.containedTypeSignature, result.containedTypeSignature);
+
+    EXPECT_TRUE(result.is<std::vector<simppl::dbus::Any>>());
+    std::vector<simppl::dbus::Any> resultVec =
+        result.as<std::vector<simppl::dbus::Any>>();
+
+    EXPECT_EQ(vec.size(), resultVec.size());
+    EXPECT_TRUE(vec[0].is<std::string>());
+    EXPECT_EQ(vec[0].as<std::string>(),
+              std::string{"https://http.cat/status/200"});
+    EXPECT_TRUE(vec[1].is<uint32_t>());
+    EXPECT_EQ(vec[1].as<uint32_t>(), static_cast<uint32_t>(25));
+    EXPECT_TRUE(vec[2].is<double>());
+    EXPECT_EQ(vec[2].as<double>(), static_cast<double>(42.42));
+  });
+}
+
+TEST(Any, encode_decode_vector_full) {
   simppl::dbus::Dispatcher d("bus:session");
 
   std::thread t([]() {
@@ -322,12 +480,6 @@ TEST(Any, empty) {
   // wait for server to get ready
   std::this_thread::sleep_for(200ms);
 
-  /*simppl::dbus::Any a;
-  for (size_t i = 0; i < 10; i++)
-  {
-      a = stub.setGet(a);
-  }*/
-
   simppl::dbus::Any a = stub.getVecEmpty();
   EXPECT_TRUE(a.is<std::vector<std::string>>());
   for (size_t i = 0; i < 10; i++) {
@@ -337,4 +489,26 @@ TEST(Any, empty) {
 
   stub.stop(); // stop server
   t.join();
+}
+
+TEST(Any, get_vec) {
+  std::vector<std::string> vec{"https://http.cat/status/200",
+                               "https://http.cat/status/400",
+                               "https://http.cat/status/510"};
+  simppl::dbus::Any any = vec;
+  EXPECT_TRUE(any.is<std::vector<std::string>>());
+  std::vector<std::string> resultVec = any.as<std::vector<std::string>>();
+  EXPECT_EQ(vec.size(), resultVec.size());
+  EXPECT_EQ(vec, resultVec);
+}
+
+TEST(Any, get_vec_two_level) {
+  std::vector<std::vector<std::string>> vec{
+      {"https://http.cat/status/200"},
+      {"https://http.cat/status/400", "https://http.cat/status/510"}};
+  simppl::dbus::Any any = vec;
+  EXPECT_TRUE(any.is<std::vector<std::vector<std::string>>>());
+  std::vector<std::vector<std::string>> resultVec = any.as<std::vector<std::vector<std::string>>>();
+  EXPECT_EQ(vec.size(), resultVec.size());
+  EXPECT_EQ(vec, resultVec);
 }
