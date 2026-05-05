@@ -73,7 +73,9 @@ template <> IntermediateAnyVec decode2(DBusMessageIter &iter) {
   dbus_message_iter_recurse(&iter, &arrayIter);
 
   std::vector<std::any> array;
-  std::string elementSignature = dbus_message_iter_get_signature(&arrayIter);
+  char *dbusStr = dbus_message_iter_get_signature(&arrayIter);
+  std::string elementSignature{dbusStr};
+  dbus_free(dbusStr);
   for (int elementType = dbus_message_iter_get_arg_type(&arrayIter);
        elementType != DBUS_TYPE_INVALID;
        elementType = dbus_message_iter_get_arg_type(&arrayIter)) {
@@ -93,7 +95,9 @@ template <> IntermediateAnyTuple decode2(DBusMessageIter &iter) {
 
   std::vector<std::any> tupleVec;
   std::vector<int> tupleTypes;
-  std::string elementSignature = dbus_message_iter_get_signature(&arrayIter);
+  char *dbusStr = dbus_message_iter_get_signature(&arrayIter);
+  std::string elementSignature{dbusStr};
+  dbus_free(dbusStr);
   for (int elementType = dbus_message_iter_get_arg_type(&arrayIter);
        elementType != DBUS_TYPE_INVALID;
        elementType = dbus_message_iter_get_arg_type(&arrayIter)) {
@@ -112,11 +116,15 @@ template <> IntermediateAnyMapElement decode2(DBusMessageIter &iter) {
   DBusMessageIter mapElemIter;
   dbus_message_iter_recurse(&iter, &mapElemIter);
 
-  std::string keySignature = dbus_message_iter_get_signature(&mapElemIter);
+  char *dbusStr = dbus_message_iter_get_signature(&mapElemIter);
+  std::string keySignature{dbusStr};
+  dbus_free(dbusStr);
   int keyType = dbus_message_iter_get_arg_type(&mapElemIter);
   std::any key = decodeAsAny(mapElemIter, keyType);
 
-  std::string valueSignature = dbus_message_iter_get_signature(&mapElemIter);
+  dbusStr = dbus_message_iter_get_signature(&mapElemIter);
+  std::string valueSignature{dbusStr};
+  dbus_free(dbusStr);
   int valueType = dbus_message_iter_get_arg_type(&mapElemIter);
   std::any value = decodeAsAny(mapElemIter, valueType);
 
@@ -131,7 +139,9 @@ template <> IntermediateAnyMapElement decode2(DBusMessageIter &iter) {
 template <> Any decode2(DBusMessageIter &iter) {
   DBusMessageIter varIter;
   dbus_message_iter_recurse(&iter, &varIter);
-  std::string elementSignature = dbus_message_iter_get_signature(&varIter);
+  char *dbusStr = dbus_message_iter_get_signature(&varIter);
+  std::string elementSignature{dbusStr};
+  dbus_free(dbusStr);
 
   int type = dbus_message_iter_get_arg_type(&varIter);
   std::any any = decodeAsAny(varIter, type);
@@ -211,8 +221,9 @@ void encodeAny(DBusMessageIter &iter, const std::any &any, const int anyType) {
     if (any.type() == typeid(IntermediateAnyTuple)) {
       encode2(iter, std::any_cast<IntermediateAnyTuple>(any));
     } else {
-      assert(false); // Should not happen since we convert all tuples (structs)
-                     // that get passed to Any to an intermediate representation.
+      assert(
+          false); // Should not happen since we convert all tuples (structs)
+                  // that get passed to Any to an intermediate representation.
     }
     break;
   case DBUS_TYPE_DICT_ENTRY:
@@ -297,18 +308,18 @@ Any::Any(const Any &other) {
 }
 
 Any &Any::operator=(Any &&old) {
-    containedType = old.containedType;
-    containedTypeSignature = std::move(old.containedTypeSignature);
-    value_ = std::move(old.value_);
-    return *this;
-  }
+  containedType = old.containedType;
+  containedTypeSignature = std::move(old.containedTypeSignature);
+  value_ = std::move(old.value_);
+  return *this;
+}
 
-  Any &Any::operator=(const Any &other) {
-    containedType = other.containedType;
-    containedTypeSignature = other.containedTypeSignature;
-    value_ = other.value_;
-    return *this;
-  }
+Any &Any::operator=(const Any &other) {
+  containedType = other.containedType;
+  containedTypeSignature = other.containedTypeSignature;
+  value_ = other.value_;
+  return *this;
+}
 
 } // namespace dbus
 } // namespace simppl
